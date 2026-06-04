@@ -141,17 +141,4 @@ nlp/
 ├── notebooks/
 └── report/
 ```
-
-## Phases
-
-1. **Madrid (May–Jun):** reading, repo setup, dataset inspection, model weights cache
-2. **Madrid (Jun):** data pipeline, fine-tuning, inference parquet export
-3. **China (Jul–Aug):** manual PyTorch loop, tests, disentanglement, analysis, dashboard
-4. **Post-China (Sep+):** aspect-based extension, paper submission
-
-## Offline mode (pre-departure)
-
-```bash
-export HF_HUB_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
 ```
