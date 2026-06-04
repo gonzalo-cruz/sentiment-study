@@ -17,12 +17,17 @@ env/
 # uv (lockfile is committed for reproducibility)
 .python-version
 
-# Data & model artifacts (large / local only)
-data/raw/
-data/processed/
-data/gold/
-data/outputs/
-models/
+# Data & model artifacts (large / local only; keep folder skeleton via .gitkeep)
+data/raw/*
+!data/raw/**/.gitkeep
+data/processed/*
+!data/processed/**/.gitkeep
+data/gold/*
+!data/gold/**/.gitkeep
+data/outputs/*
+!data/outputs/**/.gitkeep
+/models/
+!models/.gitkeep
 *.parquet
 *.pt
 *.pth
