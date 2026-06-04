@@ -1,0 +1,446 @@
+---
+alwaysApply: true
+---
+## Research questions
+
+> **RQ1.** Do Chinese, Spanish, and English-speaking online communities express systematically different sentiment toward global tech products (e.g. Apple, ChatGPT), and in what direction and magnitude?
+>
+> **RQ2.** How much of any observed asymmetry is genuine cultural difference versus model bias — and can it be quantified using back-translation and human-annotated controls?
+>
+> **RQ3.** How does subword tokenization of Chinese (no word boundaries) affect sentiment predictions relative to Spanish and English?
+
+RQ2 is the spine. RQ1 is the hook. RQ3 is the differentiator.
+
+---
+
+## Datasets
+
+### Baseline (training & validation)
+
+| Dataset | HuggingFace ID | Language | Size | Role |
+|---|---|---|---|---|
+| weibo_senti_100k | `dirtycomputer/weibo_senti_100k` | zh | 100k | Primary ZH training |
+| Sentiment140 | `sentiment140` | en | 1.6M (subsample 100k) | Primary EN training |
+| ChnSentiCorp | `seamew/ChnSentiCorp` | zh | ~12k | ZH validation only |
+| SST-2 | `sst2` (GLUE) | en | ~67k | EN validation only |
+
+> No labeled Spanish training data needed — XLM-R transfers to Spanish zero-shot. Validate the Spanish side manually (the author is fluent — a genuine methodological strength to claim explicitly).
+
+### Study corpora (unlabeled — for cultural comparison)
+
+| Source | Method | Language | Target communities |
+|---|---|---|---|
+| Reddit EN | PRAW API | en | r/apple, r/technology, r/ChatGPT |
+| Reddit ES (peninsular) | PRAW API | es | r/es, r/spain, r/preguntareddit, r/podemos |
+| Weibo/NLPCC | Pre-collected academic datasets + weibo_senti_100k inference pool | zh | Tech topics matching Reddit |
+
+> Spanish scope is **peninsular (Spain) Spanish**, not LatAm. r/es and r/spain skew toward Spain; filter by flair/community where possible. Document this scope choice — it is a deliberate scoping decision, not a limitation to hide.
+
+**Critical:** match time windows across all three corpora. Record exact date ranges — this is what makes the comparison defensible.
+
+---
+
+## Architecture
+
+### Phase 1 model — multilingual sentiment classifier
+- **Base:** `xlm-roberta-base` (270MB, fits 4GB VRAM)
+- **Task:** binary sentiment (positive / negative)
+- **Approach:** fine-tune top 6 of 12 transformer layers + classification head on `[CLS]`
+- **Training data:** weibo_senti_100k + sentiment140 (100k sample), mixed and shuffled
+
+### Key hyperparameters
+
+```python
+TrainingArguments(
+    num_train_epochs=3,
+    per_device_train_batch_size=16,
+    learning_rate=2e-5,
+    fp16=True,                  # required on 4GB VRAM
+    warmup_ratio=0.1,
+    eval_strategy="epoch",      # renamed from evaluation_strategy in transformers 4.x
+    save_strategy="epoch",
+    load_best_model_at_end=True,
+    metric_for_best_model="f1",
+)
+```
+
+### Disentanglement methodology (the core — RQ2)
+
+This is what elevates the project. Three controls:
+
+1. **Back-translation control.** Translate a sample of Chinese posts → English (and Spanish → English) via an MT model, run them through the classifier, and compare to native English sentiment on the same topics. If translated-ZH and native-EN agree but native-ZH differs, the difference is *cultural*. If translated-ZH already diverges, part of it is *translation/model artefact*. This is the key experiment.
+2. **Human-annotated gold sets.** Hand-label ~200 posts per language (author can do EN + ES directly; ZH at learner level + cross-check against existing labels — documented honestly). Measures the model's true per-language accuracy on *your* domain, not just the benchmark.
+3. **Per-language calibration.** Temperature scaling fit separately per language so confidence scores are comparable. Report reliability diagrams per language. ~30 lines on top of the trained model.
+
+### Annotation disagreement analysis
+During gold-set labelling, flag genuinely ambiguous posts (sarcasm, mixed sentiment, culturally dependent reading) as "ambiguous" rather than forcing a label. Analyse these separately: where the human and model disagree *and* the post is ambiguous, you have the richest cases for qualitative discussion in the paper. This is where Mandarin learning becomes an analytical tool — you can write about *why* a Chinese post reads differently to a learner vs a native model.
+
+### Chinese tokenization analysis (RQ3 — the differentiator)
+Study how XLM-R's SentencePiece segments Chinese (no spaces) vs Spanish/English, and how segmentation correlates with prediction confidence and errors. Qualitative audit of specific failure cases using the author's Mandarin knowledge. This is the section almost no other author could write.
+
+### Explainability layer
+Use SHAP (or attention-based attribution) to show which tokens drive each prediction. The cross-lingual comparison is the key: does the model attend to the same semantic cues in Chinese as in English? If it latches onto different features per language, that's evidence of model bias. If it latches onto genuinely different framing (Chinese posts emphasise price, English posts emphasise innovation), that's a cultural finding. Either way it's a result — and it adds a visual to the dashboard (highlighted text showing sentiment-driving tokens).
+
+### Embedding space visualisation
+Extract `[CLS]` embeddings from study corpora and project to 2D with UMAP. Color by language, then by sentiment. If the Chinese cluster separates from the English one even after controlling for sentiment, that's a visual demonstration of cultural encoding in the representation space. Makes a strong paper figure and a dashboard view.
+
+### Temporal analysis
+If Reddit data has timestamps (it does), plot sentiment per community over time aligned to product launches or news events. Does Chinese sentiment toward Apple shift around US-China trade tensions? Does Spanish sentiment differ around EU regulatory announcements? Compelling figures for the paper — and free from existing timestamped data.
+
+### LLM baseline comparison (phase 4)
+Run study data through a prompted multilingual LLM (GPT-4o or Claude Sonnet via API) with a simple "classify sentiment" prompt, and compare its cultural asymmetry profile against the fine-tuned XLM-R. Agreement = findings are robust. Disagreement = discussion point about how architecture and training data shape cultural perception. Timely and publishable angle.
+
+### Analysis pipeline
+1. Inference on study corpora → parquet: `text, lang, topic, sentiment_label, sentiment_score, confidence, timestamp`
+2. Sentiment ratio by topic — % positive ZH vs ES vs EN per topic
+3. Distribution shift — KL / Jensen-Shannon divergence per topic pair
+4. Topic-level asymmetry ranking across the three languages
+5. Statistical validation — Mann-Whitney U, confidence intervals
+6. Back-translation comparison — native vs translated sentiment gap
+7. Per-language calibration curves (reliability diagrams)
+8. Gold-set accuracy + annotation disagreement analysis
+9. Tokenization analysis — segmentation stats, confidence correlation, error audit
+10. Explainability — SHAP/attention attribution, cross-lingual comparison of driving tokens
+11. Embedding visualisation — UMAP projection, language/sentiment clustering
+12. Temporal analysis — sentiment over time per community, event alignment
+13. (Phase 4) Aspect-level heatmap — sentiment per aspect per language per topic
+14. (Phase 4) LLM baseline comparison — prompted LLM vs fine-tuned XLM-R asymmetry profile
+
+**Confound, addressed not just acknowledged:** report per-language F1, back-translation gap, gold-set accuracy, and SHAP attribution comparison together. These jointly quantify how much asymmetry is cultural vs. model artefact.
+
+### Demo & deployment
+- FastAPI backend: `POST /predict` (live inference + confidence + SHAP highlights), `GET /study/results` (precomputed findings)
+- Interactive dashboard: Streamlit — topic asymmetry explorer, distribution plots, live predictor with token highlights, back-translation comparison view, embedding space explorer, temporal sentiment timeline
+- Deployment: HuggingFace Spaces (free, cloud-hosted, accessible from China)
+- Phase 4: aspect-level exploration + LLM comparison view
+
+---
+
+## Repo structure
+
+```
+sentiment-study/
+├── .cursor/
+│   └── rules                    # Cursor coding preferences
+├── README.md
+├── MODEL_CARD.md                # model card (Mitchell et al. 2019 template)
+├── pyproject.toml
+├── data/
+│   ├── raw/
+│   ├── processed/
+│   └── gold/                    # hand-annotated gold sets (with ambiguity flags)
+├── models/                      # saved checkpoints
+├── src/
+│   ├── data/
+│   │   ├── loaders.py           # HuggingFace + PRAW loading
+│   │   ├── preprocessing.py     # tokenization, filtering, dedup, langdetect
+│   │   └── backtranslate.py     # MT for the back-translation control
+│   ├── models/
+│   │   ├── train.py             # manual PyTorch loop + Trainer version
+│   │   ├── predict.py           # batch inference → parquet
+│   │   └── calibration.py       # per-language temperature scaling
+│   └── analysis/
+│       ├── distributions.py     # sentiment ratios, KL/JS divergence
+│       ├── stats.py             # Mann-Whitney, CIs
+│       ├── disentangle.py       # back-translation + gold-set analysis
+│       ├── tokenization.py      # ZH segmentation analysis (RQ3)
+│       ├── explainability.py    # SHAP / attention attribution
+│       ├── embeddings.py        # UMAP projection + clustering
+│       ├── temporal.py          # sentiment over time, event alignment
+│       ├── aspects.py           # ABSA (phase 4)
+│       └── llm_baseline.py      # LLM comparison (phase 4)
+├── tests/
+│   ├── test_preprocessing.py
+│   ├── test_model.py
+│   └── test_api.py
+├── api/
+│   └── main.py                  # FastAPI app
+├── dashboard/                   # Streamlit frontend
+├── notebooks/                   # EDA and results viz only
+└── report/                      # LaTeX
+```
+
+---
+
+## Stack
+
+```toml
+[project.dependencies]
+transformers = ">=4.40"
+datasets = ">=2.19"
+torch = ">=2.2"
+shap = ">=0.45"            # explainability
+umap-learn = ">=0.5"       # embedding projection
+sacremoses = ">=0.1"       # MT tokenization for back-translation
+praw = ">=7.7"
+polars = ">=0.20"
+langdetect = ">=1.0"
+scipy = ">=1.13"
+matplotlib = ">=3.9"
+seaborn = ">=0.13"
+fastapi = ">=0.111"
+pydantic = ">=2.7"
+pytest = ">=8.2"
+uvicorn = ">=0.29"
+streamlit = ">=1.35"       # dashboard
+mlflow = ">=2.12"          # experiment tracking
+```
+
+Package manager: `uv`
+
+---
+
+## Tooling
+
+- **Editor:** Cursor
+- **Planning:** GPT 5.5 (high-level design, research questions, architecture)
+- **Execution:** Composer 2.5 (code generation, refactoring, debugging)
+- **Experiment tracking:** MLflow (all training runs, hyperparameter sweeps, calibration)
+- **Package manager:** `uv`
+
+> Agents from `~/.claude/agents/` are Claude Code-specific. Reuse their system prompts as Cursor rules or composer instructions where useful (e.g. `code-reviewer`, `test-writer`, `latex-report-writer`).
+
+---
+
+## Learning goals
+
+A deliberate learning exercise across four areas:
+
+**PyTorch & fine-tuning**
+Write the training loop manually first — forward pass, backward pass, optimizer step, scheduler, validation loop — before touching the Trainer API. Internalise autograd, gradient accumulation, `model.train()` vs `model.eval()`, schedulers.
+
+**Experiment tracking**
+Track every run with MLflow: hyperparameters, per-language F1, calibration metrics, back-translation gaps. Makes results reproducible and is a strong resume keyword.
+
+**Testing**
+Three layers: data tests (preprocessing correctness), model tests (shapes, forward pass, edge cases), API tests (schemas, error handling).
+
+**Good practices**
+Type hints everywhere, pydantic for all schemas, docstrings on every public function, pinned deps via uv, pytest on every commit, model card for responsible ML documentation.
+
+---
+
+## Reading list
+
+### Must read (in order)
+1. Lazer et al. (2009) — Computational social science · *Science* · 3 pages — **read first**
+2. Vaswani et al. (2017) — Attention is all you need · *NeurIPS* · sections 3–4
+3. Devlin et al. (2019) — BERT · *NAACL* · sections 3–4
+4. Conneau et al. (2020) — XLM-R · *ACL* · **read fully**
+5. Howard & Ruder (2018) — ULMFiT · *ACL*
+6. Chi et al. (2021) — Zero-shot cross-lingual sentiment with XLM-R · **read carefully**
+7. Blodgett et al. (2016) — Demographic dialectal variation · *EMNLP* · methodology template
+
+### Should read
+8. Pires et al. (2019) — How multilingual is multilingual BERT? · *ACL*
+9. Pang & Lee (2008) — Opinion mining survey · intro + document-level only
+10. Zhou et al. (2016) — Cross-lingual sentiment classification · *ACL*
+11. Dashtipour et al. (2016) — Multilingual sentiment survey · *Cognitive Computation*
+
+### For the disentanglement, calibration & explainability angle
+12. Guo et al. (2017) — On calibration of modern neural networks · *ICML* — temperature scaling
+13. Hovy & Prabhumoye (2021) — Five sources of bias in NLP · *Language & Linguistics Compass*
+14. Lundberg & Lee (2017) — SHAP: a unified approach to interpreting model predictions · *NeurIPS*
+15. Mitchell et al. (2019) — Model cards for model reporting · *FAT\** — template for your MODEL_CARD.md
+
+### Phase 4 (aspect-based + LLM comparison)
+16. Pontiki et al. (2016) — SemEval-2016 Task 5: ABSA · *SemEval*
+17. Xu et al. (2019) — BERT post-training for review-based ABSA · *ACL*
+
+### Book
+- **Natural Language Processing with Transformers (Revised Ed.)** — Tunstall, von Werra & Wolf (O'Reilly, 2022). Read ch. 1–3 in week 1.
+
+---
+
+## Timeline
+
+### Context
+- **Exams:** Diseño y Análisis de Algoritmos — June 10 · Sistemas Operativos — June 29 · Series Temporales — June 30
+- **Departure:** July 3
+- **Available time:** ~1h/day throughout — Madrid and China alike. No sprint windows.
+- **China:** July 3 – end of August (~60 days)
+- **Post-China:** September onwards, no rush
+- **Rule:** exams always come first. This project never competes with them — it fills the remaining 1h.
+
+At 1h/day the honest accounting is: ~38h in Madrid before departure, ~60h in China, unlimited post-China. The pipeline and training must be done before July 3. The analysis, paper, and extensions happen in China and after.
+
+---
+
+### Phase 1 — Madrid: reading + repo (May 26 – June 9)
+*1h/day evenings. Pure reading and one-time setup. Nothing that needs deep focus.*
+
+**Reading (interleave across the whole phase)**
+- [ ] Lazer et al. 2009 — 15 min, do it today
+- [ ] NLP with Transformers ch. 1–2 — spread over ~1 week of evenings
+- [ ] XLM-R paper (Conneau et al. 2020) — ~1h
+- [ ] Guo et al. 2017 (calibration) — ~45 min, skim for the core idea
+- [ ] Blodgett et al. 2016 (methodology template) — ~1h
+
+**Setup (one evening each)**
+- [ ] Repo skeleton + uv environment
+- [ ] Write `.cursor/rules`
+- [ ] Load and inspect the four datasets in a notebook
+- [ ] **Sort VPN** — Mullvad or ProtonVPN, test it works
+- [ ] Download XLM-R weights locally so they cache: `AutoModel.from_pretrained("xlm-roberta-base")`
+
+---
+
+### Phase 2 — Madrid: data + model (June 11 – June 28)
+*1h/day. Sandwiched between SO (June 29) and ST (June 30) exams at the end — stay disciplined.*
+
+> June 10 exam frees up some energy but June 29–30 immediately constrains it again. Treat this entire phase as 1h/day, not a sprint.
+
+**Data (~1 week of evenings)**
+- [ ] `loaders.py` — HuggingFace loading + PRAW collection script
+- [ ] Run Reddit collection — EN (r/apple, r/technology, r/ChatGPT) + ES peninsular (r/es, r/spain, r/preguntareddit) — let it run overnight, note exact date range
+- [ ] `preprocessing.py` — tokenization, filtering, langdetect, dedup
+- [ ] EDA notebook — distributions, label balance, length stats
+
+**Model (~1 week of evenings)**
+- [ ] `train.py` — Trainer version, frozen bottom 6 layers, fp16, MLflow tracking from run 1
+- [ ] Fine-tuning run on 3050Ti (~30–60 min unattended) — start it before bed
+- [ ] Evaluate on ChnSentiCorp + SST-2 — record per-language F1
+- [ ] Manual spot-check of Spanish predictions
+- [ ] `predict.py` — batch inference on all three corpora → parquet
+
+**Pre-flight (~last 3 days before July 3)**
+- [ ] Smoke test full pipeline end to end
+- [ ] Download everything offline: model weights, datasets, all deps, a small MT model for back-translation, SHAP + umap-learn installed
+- [ ] Push repo to GitHub
+- [ ] Write LaTeX report skeleton — headings and placeholder sections only
+- [ ] **Write the gap paragraph** — one paragraph stating exactly what gap this fills
+- [ ] Quick look at inference results — any asymmetry visible?
+
+---
+
+### Phase 3 — China: PyTorch + tests + analysis + paper (July 3 – end of August)
+*1h/day. ~60 hours total. Mornings or evenings — pick a consistent slot and protect it.*
+
+The China phase is ~9 weeks. At 1h/day that's enough for everything below if tasks are scoped tightly. Don't try to do everything at once — one theme per week.
+
+**Week 1 (July 3–9) — PyTorch from scratch**
+- [ ] Rewrite `train.py` as a manual training loop — no Trainer API
+  - forward pass, loss, `zero_grad()` / `backward()` / `step()`
+  - gradient accumulation for 4GB VRAM
+  - linear warmup scheduler
+  - `model.train()` / `model.eval()` — understand why it matters
+  - validation loop with F1 tracking, manual checkpoint saving
+- [ ] Compare results with Trainer run — they should match
+- [ ] Read PyTorch autograd docs as you go, not before
+
+**Week 2 (July 10–16) — test suite + good practices**
+- [ ] `test_preprocessing.py` — ZH/emoji tokenization, filtering, dedup, langdetect
+- [ ] `test_model.py` — forward pass ZH/ES/EN, shapes, edge cases (empty, very long, mixed)
+- [ ] `test_api.py` — endpoint schemas, error handling, malformed input
+- [ ] Good-practices pass: type hints everywhere, pydantic for all schemas, docstrings, pinned deps verified
+
+**Week 3 (July 17–23) — disentanglement (the core contribution)**
+- [ ] `backtranslate.py` — translate ZH and ES samples → EN using a local MT model
+- [ ] `disentangle.py` — compare native vs translated sentiment per topic; compute the cultural-vs-artefact split
+- [ ] `calibration.py` — per-language temperature scaling, reliability diagrams per language
+- [ ] Hand-annotate gold sets (~200 posts per language) → `data/gold/` — EN and ES yourself; ZH using learner-level judgement + cross-check against existing labels (document honestly)
+- [ ] Flag ambiguous posts during annotation — sarcasm, mixed sentiment, culturally dependent reading. These become the annotation disagreement analysis: where human and model disagree on ambiguous posts, examine qualitatively *why*
+
+**Week 4 (July 24–30) — core analysis + explainability**
+- [ ] `distributions.py` — sentiment ratios ZH/ES/EN per topic, KL/JS divergence
+- [ ] `stats.py` — Mann-Whitney U, confidence intervals per topic pair
+- [ ] `tokenization.py` — ZH SentencePiece segmentation stats, confidence correlation, error audit
+- [ ] `explainability.py` — SHAP attribution on a sample per language, compare which tokens drive predictions cross-lingually
+- [ ] Results EDA notebook — understand the findings before writing
+
+**Week 5 (July 31 – Aug 6) — embeddings, temporal analysis, model card**
+- [ ] `embeddings.py` — extract `[CLS]` embeddings, UMAP projection, color by language and sentiment, analyse cluster separation
+- [ ] `temporal.py` — plot sentiment per community over time, align with product launches or news events (Apple keynotes, US-China trade, EU regulation)
+- [ ] Write `MODEL_CARD.md` following Mitchell et al. 2019 template — intended use, training data, per-language performance, known biases, limitations (~1h)
+
+**Week 6 (Aug 7–13) — dashboard**
+- [ ] FastAPI app — `POST /predict` (with confidence + SHAP highlights) + `GET /study/results`
+- [ ] Streamlit dashboard with tabs:
+  - Topic asymmetry explorer (bar charts, divergence rankings)
+  - Live predictor with token-level highlights
+  - Back-translation comparison view
+  - Embedding space explorer (UMAP interactive)
+  - Temporal sentiment timeline
+- [ ] Deploy to HuggingFace Spaces
+
+**Weeks 7–9 (Aug 14 – end of August) — paper**
+- [ ] Write methodology section first (documenting decisions already made)
+- [ ] Results section — lead with the finding, not the metrics. Include:
+  - Sentiment ratios + divergence rankings + significance
+  - Disentanglement: per-language F1, back-translation gap, gold-set accuracy, annotation disagreement cases
+  - Explainability: cross-lingual SHAP comparison
+  - Embeddings: UMAP figure + cluster analysis
+  - Temporal patterns
+  - Tokenization findings
+- [ ] Discussion — cultural context, censorship effects on Weibo, disentanglement interpretation, explainability insights
+- [ ] Conclusion + abstract
+- [ ] Introduction last
+- [ ] README with findings summary and Mandarin motivation
+
+---
+
+### Phase 4 — Post-China: ABSA + LLM comparison + final paper (September+)
+*No time pressure. This is what takes it from great to publishable.*
+
+- [ ] Read Pontiki et al. (2016) + Xu et al. (2019)
+- [ ] `aspects.py` — sentiment per aspect (price, design, privacy, performance, ecosystem) per language per topic
+- [ ] `llm_baseline.py` — run study data through GPT-4o or Claude Sonnet via API with "classify sentiment" prompt; compare asymmetry profiles with fine-tuned XLM-R. Agreement = findings robust. Disagreement = discussion on how architecture shapes cultural perception.
+- [ ] Aspect heatmap + LLM comparison view added to dashboard
+- [ ] Extend paper with ABSA section and LLM comparison discussion
+- [ ] Expand corpora if needed
+- [ ] Final proofreading pass
+- [ ] **Upload to arXiv unconditionally** — a null result or "asymmetry fully explained by model bias" is a valid, interesting finding. Don't hedge.
+- [ ] Update README + CV entry
+
+---
+
+## Pre-departure checklist (complete before July 3)
+
+- [ ] VPN working and tested (Mullvad / ProtonVPN)
+- [ ] XLM-R weights cached locally — verify path
+- [ ] Small MT model for back-translation downloaded locally
+- [ ] All HuggingFace datasets downloaded locally — verify cache
+- [ ] `transformers`, `datasets`, `torch`, `praw`, `polars`, `mlflow`, `scipy`, `streamlit`, `shap`, `umap-learn` installed and tested offline
+- [ ] Repo on GitHub with full pipeline committed
+- [ ] Reddit EN + peninsular ES collected and in `data/raw/`
+- [ ] Fine-tuned checkpoint saved locally + pushed to HF Hub
+- [ ] Inference parquet files generated for all three corpora
+- [ ] LaTeX skeleton written
+- [ ] Gap paragraph written
+
+---
+
+## Paper structure
+
+Write section 4 (methodology) first.
+
+1. **Introduction** — open with the cultural question; state RQ1–RQ3; one-paragraph findings summary. Write last.
+2. **Related work** — four paragraphs (cross-lingual sentiment, computational social science, cultural linguistics, model bias/fairness), each ending by positioning your work in the gap.
+3. **Data** — datasets, symmetry argument, peninsular-Spanish scope, collection methodology, statistics table.
+4. **Methodology** — XLM-R and why; fine-tuning setup + hyperparameter table; the three analysis measures; **the disentanglement design (back-translation + gold sets + calibration + annotation disagreement)**; explainability setup (SHAP); embedding extraction (UMAP); temporal analysis design; tokenization analysis method.
+5. **Results** — lead with the finding. Structure:
+   - 5.1 Sentiment asymmetry (ratios, divergence rankings, significance)
+   - 5.2 Disentanglement (per-language F1, back-translation gap, gold-set accuracy, annotation disagreement cases)
+   - 5.3 Explainability (cross-lingual SHAP comparison — what tokens drive predictions)
+   - 5.4 Embedding analysis (UMAP figure, cluster separation, cultural encoding evidence)
+   - 5.5 Temporal patterns (sentiment over time, event alignment)
+   - 5.6 Tokenization (ZH segmentation, confidence correlation, error audit)
+6. **Discussion** — interpret asymmetries (cultural context, platform/censorship effects on Weibo). State plainly how much is cultural vs. artefact using the disentanglement evidence. Discuss explainability insights and what the embedding space reveals. Tokenization implications for multilingual NLP. Limitations.
+7. **Conclusion** — findings, meaning, next steps (ABSA, LLM comparison).
+
+---
+
+## Framing rules
+
+> "I investigated whether Chinese, Spanish, and English communities express systematically different sentiment toward global tech products — and built a methodology to separate genuine cultural difference from model bias. I found [X]; [Y]% of the apparent asymmetry survives the back-translation and calibration controls. SHAP analysis shows the model relies on [different/similar] token patterns across languages, and embedding analysis reveals [cultural clustering / no clustering] in the representation space."
+
+The model is the method. The disentanglement is the contribution. The findings are the product.
+
+**Mandarin motivation — structural, not decorative.** Frame the author's Mandarin study as *why the disentanglement, tokenization, and annotation disagreement analyses are possible*: a Chinese learner can audit cross-lingual model failures and flag culturally ambiguous cases that a monolingual researcher cannot. One sentence in the intro, expanded in the methodology where the ZH analysis happens. On the CV, add Mandarin to a languages section.
+
+---
+
+## CV entry (draft)
+
+> **Cross-lingual Cultural Sentiment Study** · *Python, PyTorch, XLM-RoBERTa, SHAP, FastAPI, MLflow, HuggingFace*
+> Fine-tuned a multilingual transformer on 200k social media posts (Chinese, Spanish, English) to study cultural sentiment asymmetry toward global tech products. Built a disentanglement methodology (back-translation controls, per-language calibration, human-annotated gold sets) to quantify how much asymmetry is cultural vs. model bias. Extended with SHAP explainability, embedding-space analysis, temporal patterns, and aspect-based sentiment. Deployed as an interactive dashboard on HuggingFace Spaces; writeup on arXiv.

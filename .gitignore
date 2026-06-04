@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# uv (lockfile is committed for reproducibility)
+.python-version
+
+# Data & model artifacts (large / local only)
+data/raw/
+data/processed/
+data/gold/
+data/outputs/
+models/
+*.parquet
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Experiment tracking
+mlruns/
+mlflow.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# Tests & type checking
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Secrets — never commit API keys
+.env
+.env.*
+!.env.example
+
+# IDE (pyrightconfig.json at repo root covers analysis paths)
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# HuggingFace / torch caches (usually under ~/.cache, not in repo)
+# Uncomment if you symlink caches into the project:
+# .cache/
